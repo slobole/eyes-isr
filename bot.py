@@ -1,7 +1,8 @@
-import os
-import logging
-
 import discord
+import logging
+import os
+import ssl
+
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -19,50 +20,45 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-slack_client = WebClient(token=SLACK_TOKEN)
-discord_client = discord.Client()
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
+
+slack_client = WebClient(token=SLACK_TOKEN, ssl=ssl_ctx)
 
 
-def _build_slack_text(message: discord.Message) -> str:
-    """Build the plain-text payload forwarded to Slack."""
-    header = f"*{message.author.display_name}*"
-    parts_list = [header]
-
-    if message.content:
-        parts_list.append(message.content)
-
-    for attachment in message.attachments:
-        parts_list.append(attachment.url)
-
-    for embed in message.embeds:
-        if embed.url:
-            parts_list.append(embed.url)
-
-    return "\n".join(parts_list)
-
-
-def _post_to_slack(text: str) -> None:
+def forward_to_slack(text: str) -> None:
     try:
         slack_client.chat_postMessage(channel=TARGET_CHANNEL, text=text)
-        log.info("Forwarded message to Slack %s", TARGET_CHANNEL)
     except SlackApiError as exc:
         log.error("Slack API error: %s", exc.response["error"])
 
 
-@discord_client.event
-async def on_ready():
-    log.info("Logged in as %s (id: %s)", discord_client.user, discord_client.user.id)
-    log.info("Watching Discord channel %s -> Slack %s", DISCORD_CHANNEL_ID, TARGET_CHANNEL)
+class MessageReaderClient(discord.Client):
+
+    async def on_ready(self):
+        log.info("Logged in as %s", self.user)
+        channel = self.get_channel(DISCORD_CHANNEL_ID)
+        if channel is None:
+            log.error("Could not find channel with ID %s", DISCORD_CHANNEL_ID)
+            return
+        log.info("Watching #%s → Slack %s", channel.name, TARGET_CHANNEL)
+
+    async def on_message(self, message):
+        if message.channel.id != DISCORD_CHANNEL_ID:
+            return
+
+        attachment_url_list = [a.url for a in message.attachments]
+        body = message.content or ""
+        if attachment_url_list:
+            body = body + "\n" + "\n".join(attachment_url_list) if body else "\n".join(attachment_url_list)
+
+        if not body:
+            return
+
+        log.info("Forwarding message from %s", message.author)
+        forward_to_slack(body)
 
 
-@discord_client.event
-async def on_message(message: discord.Message):
-    if message.channel.id != DISCORD_CHANNEL_ID:
-        return
-
-    text = _build_slack_text(message)
-    _post_to_slack(text)
-
-
-if __name__ == "__main__":
-    discord_client.run(DISCORD_TOKEN)
+client = MessageReaderClient()
+client.run(DISCORD_TOKEN)

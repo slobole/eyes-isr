@@ -2,6 +2,7 @@
 configured in .env without needing a Discord connection."""
 
 import os
+import ssl
 import logging
 
 from dotenv import load_dotenv
@@ -19,7 +20,11 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-slack_client = WebClient(token=SLACK_TOKEN)
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
+
+slack_client = WebClient(token=SLACK_TOKEN, ssl=ssl_ctx)
 
 TEST_MESSAGE = "*test-bot*\nhello this is a test"
 
